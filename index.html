@@ -87,6 +87,8 @@ button,input,textarea{font-family:var(--font-mono);}
 .editor-header{padding:14px 30px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
 .editor-date-display{font-size:11px;font-family:var(--font-mono);color:var(--text-muted);}
 .editor-actions{display:flex;gap:8px;align-items:center;}
+.save-btn{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;transition:background 0.2s;}
+.save-btn:hover{background:#1d4ed8;}
 .mood-picker{display:flex;gap:5px;}
 .mood-dot{width:24px;height:24px;border-radius:50%;border:1.5px solid rgba(143,167,205,.5);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all 0.2s;background:rgba(18,30,53,0.84);}
 .mood-dot:hover{transform:scale(1.15);}
@@ -205,6 +207,7 @@ mark{background:rgba(88,181,255,0.2);color:inherit;border-radius:3px;padding:0 2
       <div class="editor-header">
         <div class="editor-date-display" id="editorDateDisplay"></div>
         <div class="editor-actions">
+          <button type="button" class="save-btn" onclick="manualSave()">保存</button>
           <div class="mood-picker">
             <button class="mood-dot" onclick="setMood(0,'☀️')">☀️</button>
             <button class="mood-dot" onclick="setMood(1,'🌿')">🌿</button>
@@ -322,18 +325,46 @@ async function loadEntries() {
 }
 
 async function saveEntry(e) {
-  if (e._new) {
-    const { data, error } = await sb.from('entries').insert({
-      user_id: currentUser.id, title: e.title, body: e.body, mood: e.mood, tags: e.tags, date: e.date
-    }).select().single();
-    if (!error && data) {
-      const idx = entries.findIndex(x => x.id === e.id);
-      entries[idx] = data;
-      activeId = data.id;
-    }
-  } else {
-    await sb.from('entries').update({ title: e.title, body: e.body, mood: e.mood, tags: e.tags, date: e.date }).eq('id', e.id).eq('user_id', currentUser.id);
+  if (!currentUser) {
+    console.error('saveEntry: no current user');
+    return { error: new Error('ログインが必要です') };
   }
+
+  const payload = {
+    user_id: currentUser.id,
+    title: e.title || '',
+    body: e.body || '',
+    mood: e.mood || null,
+    tags: e.tags || [],
+    date: e.date || todayStr(),
+  };
+
+  if (e._new || String(e.id).startsWith('temp-')) {
+    const { data, error } = await sb.from('entries').insert(payload).select().single();
+    if (error) {
+      console.error('saveEntry insert error', error);
+      return { error };
+    }
+    if (data) {
+      const idx = entries.findIndex(x => x.id === e.id);
+      if (idx >= 0) entries[idx] = { ...data };
+      activeId = data.id;
+      return { data };
+    }
+    return { data: null };
+  }
+
+  const { data, error } = await sb.from('entries').update(payload).eq('id', e.id).eq('user_id', currentUser.id).select().single();
+  if (error) {
+    console.error('saveEntry update error', error);
+    return { error };
+  }
+  if (data) {
+    const idx = entries.findIndex(x => x.id === e.id);
+    if (idx >= 0) entries[idx] = { ...data };
+    activeId = data.id;
+  }
+  return { data };
 }
 
 async function newEntry() {
@@ -374,19 +405,51 @@ function onEdit() {
   document.getElementById('saveIndicator').className = 'save-indicator';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
-    await saveEntry(e);
+    const result = await saveEntry(e);
+    if (result?.error) {
+      document.getElementById('saveIndicator').textContent = '保存失敗';
+      document.getElementById('saveIndicator').className = 'save-indicator';
+      console.error('saveEntry failed', result.error);
+      return;
+    }
     document.getElementById('saveIndicator').textContent = '保存済み ✓';
     document.getElementById('saveIndicator').className = 'save-indicator saved';
     renderList();
   }, 1000);
 }
 
+async function manualSave() {
+  const e = entries.find(x => x.id === activeId);
+  if (!e) return;
+  document.getElementById('saveIndicator').textContent = '保存中...';
+  document.getElementById('saveIndicator').className = 'save-indicator';
+  const result = await saveEntry(e);
+  if (result?.error) {
+    document.getElementById('saveIndicator').textContent = '保存失敗';
+    console.error('manualSave failed', result.error);
+  } else {
+    document.getElementById('saveIndicator').textContent = '保存済み ✓';
+    document.getElementById('saveIndicator').className = 'save-indicator saved';
+    renderList();
+  }
+}
+
+
 async function setMood(idx, emoji) {
   const e = entries.find(x => x.id === activeId);
   if (!e) return;
   e.mood = emoji;
   document.querySelectorAll('.mood-dot').forEach((btn, i) => btn.classList.toggle('selected', i === idx));
-  await saveEntry(e);
+
+  const result = await saveEntry(e);
+  if (result?.error) {
+    document.getElementById('saveIndicator').textContent = '保存失敗';
+    document.getElementById('saveIndicator').className = 'save-indicator';
+    console.error('setMood saveEntry failed', result.error);
+    return;
+  }
+  document.getElementById('saveIndicator').textContent = '保存済み ✓';
+  document.getElementById('saveIndicator').className = 'save-indicator saved';
   renderList();
 }
 
